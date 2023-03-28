@@ -1,0 +1,53 @@
+go build -o server
+
+
+gcloud builds submit \
+  --tag gcr.io/$GOOGLE_CLOUD_PROJECT/potree-converter
+
+
+gcloud run deploy potree-converter \
+  --image gcr.io/$GOOGLE_CLOUD_PROJECT/potree-converter \
+  --platform managed \
+  --region us-east1 \
+  --memory=2Gi \
+  --no-allow-unauthenticated \
+  --set-env-vars PDF_BUCKET=potree_static_pages \
+  --max-instances=3
+
+
+gsutil notification create -t new-doc -f json -e OBJECT_FINALIZE gs://potree_converter_staging
+
+
+gcloud iam service-accounts create pubsub-cloud-run-invoker --display-name "PubSub Cloud Run Invoker"
+
+
+gcloud run services add-iam-policy-binding potree-converter \
+  --member=serviceAccount:pubsub-cloud-run-invoker@$GOOGLE_CLOUD_PROJECT.iam.gserviceaccount.com \
+  --role=roles/run.invoker \
+  --region us-east1 \
+  --platform managed
+
+
+PROJECT_NUMBER=$(gcloud projects list \
+  --format="value(PROJECT_NUMBER)" \
+  --filter="$GOOGLE_CLOUD_PROJECT")
+
+
+gcloud projects add-iam-policy-binding $GOOGLE_CLOUD_PROJECT \
+  --member=serviceAccount:service-$PROJECT_NUMBER@gcp-sa-pubsub.iam.gserviceaccount.com \
+  --role=roles/iam.serviceAccountTokenCreator
+
+
+SERVICE_URL=$(gcloud run services describe potree-converter \
+  --platform managed \
+  --region us-east1 \
+  --format "value(status.url)")
+
+
+gcloud pubsub subscriptions create potree-conv-sub \
+ --topic new-doc \
+ --push-endpoint=$SERVICE_URL \
+ --push-auth-service-account=pubsub-cloud-run-invoker@$GOOGLE_CLOUD_PROJECT.iam.gserviceaccount.com
+
+
+ 
